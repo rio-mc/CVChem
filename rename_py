@@ -1,0 +1,71 @@
+import os
+import re
+
+ROOT = r"C:\Users\rmcda\OneDrive\Documents\AIChemy\CV\comp-vis-vials.v3-no-vials.png-mask-semantic\train"
+
+# Skip files you already renamed manually
+
+pattern_rf = re.compile(r"^(.*?)(?:_png)?\.rf\.[a-f0-9]+\.jpg$", re.IGNORECASE)
+pattern_mask_rf = re.compile(r"^(.*?)(?:_png)?\.rf\.[a-f0-9]+_mask\.png$", re.IGNORECASE)
+
+pattern_simple = re.compile(r"^(.*?)(?:_png)?\.png$", re.IGNORECASE)
+pattern_simple_mask = re.compile(r"^(.*?)(?:_png)?_mask\.png$", re.IGNORECASE)
+
+def normalise(name):
+    name = name.replace("_png", "")
+    return name
+
+files = sorted(os.listdir(ROOT))
+
+print("\nFiles detected:", len(files))
+print("\nPlanned renames:\n")
+
+plans = []
+
+for f in files:
+    # Full path
+    full = os.path.join(ROOT, f)
+
+    # Roboflow IMAGE
+    m = pattern_rf.match(f)
+    if m:
+        base = normalise(m.group(1))
+        new = f"{base}.png"
+        plans.append((f, new))
+        continue
+
+    # Roboflow MASK
+    m = pattern_mask_rf.match(f)
+    if m:
+        base = normalise(m.group(1))
+        new = f"{base}_mask.png"
+        plans.append((f, new))
+        continue
+
+    # Simple IMAGE (not mask)
+    m = pattern_simple.match(f)
+    if m and not f.endswith("_mask.png"):
+        base = normalise(m.group(1))
+        new = f"{base}.png"
+        plans.append((f, new))
+        continue
+
+    # Simple MASK
+    m = pattern_simple_mask.match(f)
+    if m:
+        base = normalise(m.group(1))
+        new = f"{base}_mask.png"
+        plans.append((f, new))
+        continue
+
+# Show planned renames
+for old, new in plans:
+    print(f"{old}  --->  {new}")
+
+print("\nRenaming...\n")
+
+# Perform renames
+for old, new in plans:
+    os.rename(os.path.join(ROOT, old), os.path.join(ROOT, new))
+
+print("Renaming complete.")

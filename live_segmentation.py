@@ -2,26 +2,29 @@ import os
 import cv2
 import numpy as np
 from PIL import Image
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as T
 
 
-# ==============================
-#       USER SETTINGS
-# ==============================
-
 CHECKPOINT_PATH = "unet_checkpoint.pt"
-NUM_CLASSES = 4   # 0=background, 1=oil, 2=soap, 3=honey
-USE_GPU = True    # set False if you want CPU only
-VOLUME = 36.191147369  # (Approximately) Vial Volume (cm^3)
 
-# ==============================
-#       MODEL DEFINITION
-# (must match your training script)
-# ==============================
+# Classes:
+# 0 = background
+# 1 = vial interior
+# 2 = oil
+# 3 = soap
+# 4 = honey
+NUM_CLASSES = 5
+
+USE_GPU = True
+VIAL_VOLUME_ML = 36.191147369
+
+
+# ------------------------------
+# U-Net model
+# ------------------------------
 
 class DoubleConv(nn.Module):
     def __init__(self, in_c, out_c):
@@ -45,41 +48,30 @@ class UNet(nn.Module):
         self.d3 = DoubleConv(128, 256)
         self.d4 = DoubleConv(256, 512)
 
+        self.pool = nn.MaxPool2d(2)
+
         self.u3 = DoubleConv(256 + 512, 256)
         self.u2 = DoubleConv(128 + 256, 128)
         self.u1 = DoubleConv(64 + 128, 64)
 
         self.final = nn.Conv2d(64, num_classes, 1)
-        self.pool = nn.MaxPool2d(2)
 
     def forward(self, x):
-        c1 = self.d1(x);    p1 = self.pool(c1)
-        c2 = self.d2(p1);   p2 = self.pool(c2)
-        c3 = self.d3(p2);   p3 = self.pool(c3)
+        c1 = self.d1(x); p1 = self.pool(c1)
+        c2 = self.d2(p1); p2 = self.pool(c2)
+        c3 = self.d3(p2); p3 = self.pool(c3)
         c4 = self.d4(p3)
 
-        up3 = self.u3(torch.cat([
-            F.interpolate(c4, scale_factor=2, mode="bilinear", align_corners=False),
-            c3
-        ], dim=1))
+        u3 = self.u3(torch.cat([F.interpolate(c4, scale_factor=2), c3], dim=1))
+        u2 = self.u2(torch.cat([F.interpolate(u3, scale_factor=2), c2], dim=1))
+        u1 = self.u1(torch.cat([F.interpolate(u2, scale_factor=2), c1], dim=1))
 
-        up2 = self.u2(torch.cat([
-            F.interpolate(up3, scale_factor=2, mode="bilinear", align_corners=False),
-            c2
-        ], dim=1))
-
-        up1 = self.u1(torch.cat([
-            F.interpolate(up2, scale_factor=2, mode="bilinear", align_corners=False),
-            c1
-        ], dim=1))
-
-        return self.final(up1)
+        return self.final(u1)
 
 
-# ==============================
-#       TRANSFORMS
-# (match training transform)
-# ==============================
+# ------------------------------
+# Transforms
+# ------------------------------
 
 img_transform = T.Compose([
     T.Resize((256, 256)),
@@ -89,94 +81,97 @@ img_transform = T.Compose([
 ])
 
 
-# ==============================
-#       COLOUR MAP
-# ==============================
-
-# BGR colours for OpenCV overlay
 CLASS_COLOURS = {
-    0: (0, 0, 0),         # background - black (invisible)
-    1: (255, 0, 0),       # oil - blue
-    2: (0, 255, 0),       # soap - green
-    3: (0, 0, 255),       # honey - red
+    0: (0, 0, 0),
+    1: (180, 180, 180),
+    2: (255, 0, 0),
+    3: (0, 255, 0),
+    4: (0, 0, 255),
 }
 
 
 def mask_to_colour(mask):
-    """
-    mask: (H, W) with integer class IDs
-    returns: (H, W, 3) uint8 colour image (BGR)
-    """
     h, w = mask.shape
-    colour = np.zeros((h, w, 3), dtype=np.uint8)
-    for cls_id, bgr in CLASS_COLOURS.items():
-        colour[mask == cls_id] = bgr
-    return colour
+    col = np.zeros((h, w, 3), np.uint8)
+    for cls, bgr in CLASS_COLOURS.items():
+        col[mask == cls] = bgr
+    return col
 
 
-# ==============================
-#       MAIN LIVE LOOP
-# ==============================
+# ------------------------------
+# Volume calculation
+# ------------------------------
+
+def compute_volume(pred_mask, vial_volume_ml):
+    vial_pix = np.where(pred_mask == 1)
+    if vial_pix[0].size == 0:
+        return 0.0, 0.0
+
+    vial_top = vial_pix[0].min()
+    vial_bottom = vial_pix[0].max()
+    vial_h = vial_bottom - vial_top
+
+    liquid_pix = np.where(pred_mask >= 2)
+    if liquid_pix[0].size == 0:
+        return 0.0, 0.0
+
+    liquid_bottom = liquid_pix[0].max()
+    liquid_h = max(0, liquid_bottom - vial_top)
+
+    frac = np.clip(liquid_h / vial_h, 0, 1)
+    return frac, frac * vial_volume_ml
+
+
+# ------------------------------
+# Live loop
+# ------------------------------
 
 def main():
+
     device = "cuda" if (USE_GPU and torch.cuda.is_available()) else "cpu"
-    print("Using device:", device)
+    print("Using:", device)
 
-    # Load model
     model = UNet(NUM_CLASSES).to(device)
-    if not os.path.exists(CHECKPOINT_PATH):
-        raise FileNotFoundError(f"Checkpoint not found: {CHECKPOINT_PATH}. "
-                                f"Train with TASK='seg' first.")
-    state = torch.load(CHECKPOINT_PATH, map_location=device)
-    model.load_state_dict(state)
+    model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=device))
     model.eval()
-    print(f"Loaded checkpoint from {CHECKPOINT_PATH}")
+    print("Segmentation model loaded.")
 
-    # Open default camera
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        raise RuntimeError("Could not open webcam.")
+        raise RuntimeError("Camera unavailable.")
 
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Failed to grab frame.")
-                break
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-            # Keep original size for overlay
-            orig_h, orig_w = frame.shape[:2]
+        h, w = frame.shape[:2]
 
-            # Convert BGR -> RGB -> PIL
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(rgb)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil = Image.fromarray(rgb)
+        inp = img_transform(pil).unsqueeze(0).to(device)
 
-            # Transform and add batch dimension
-            inp = img_transform(pil_img).unsqueeze(0).to(device)
+        with torch.no_grad():
+            logits = model(inp)
+            pred = logits.argmax(1)[0].cpu().numpy()
 
-            with torch.no_grad():
-                logits = model(inp)          # [1, C, 256, 256]
-                pred = logits.argmax(1)[0]   # [256, 256]
-                pred_np = pred.cpu().numpy()
+        mask_col = mask_to_colour(pred)
+        mask_col = cv2.resize(mask_col, (w, h), interpolation=cv2.INTER_NEAREST)
+        blended = cv2.addWeighted(frame, 1.0, mask_col, 0.4, 0)
 
-            # Colour mask, resize back to original size
-            colour_mask = mask_to_colour(pred_np)
-            colour_mask = cv2.resize(colour_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+        frac, vol = compute_volume(pred, VIAL_VOLUME_ML)
 
-            # Blend original frame and mask
-            alpha = 0.4  # transparency of mask
-            blended = cv2.addWeighted(frame, 1.0, colour_mask, alpha, 0)
+        cv2.putText(blended, f"{frac*100:.1f}%  {vol:.2f} mL",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                    (0, 255, 255), 2)
 
-            # Show result
-            cv2.imshow("Live Segmentation (press 'q' to quit)", blended)
+        cv2.imshow("Live Segmentation + Volume", blended)
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
+    cap.release()
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
