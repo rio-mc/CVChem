@@ -1,0 +1,8 @@
+__pycache__/
+*.log
+*.pt
+*.onnx
+photos/
+venv/
+
+photos/

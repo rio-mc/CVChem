@@ -17,14 +17,6 @@ NUM_CLASSES = 5
 USE_GPU = True
 VIAL_VOLUME_ML = 36.191147369  # known physical vial volume
 
-CLASS_NAMES = {
-    0: "background",
-    1: "vial interior",
-    2: "honey",
-    3: "oil",
-    4: "soap",
-}
-
 CLASS_COLOURS = {
     0: (0, 0, 0),
     1: (180, 180, 180),
