@@ -1,0 +1,10 @@
+oil_1.png,0
+oil_1_mask.png,0
+oil_2.png,0
+oil_2_mask.png,0
+oil_3.png,0
+oil_3_mask.png,0
+honey_1.png,2
+honey_1_mask.png,2
+honey_2.png,2
+honey_2_mask.png,2
