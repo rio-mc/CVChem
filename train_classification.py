@@ -6,7 +6,8 @@ import os
 import random
 from PIL import Image
 import numpy as np
-
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -28,6 +29,92 @@ LR = 1e-4
 TRAIN_RATIO = 0.7
 VAL_RATIO = 0.15
 
+CLASS_NAMES = ["oil", "soap", "honey", "empty"]
+
+
+def undo_normalisation(img_t):
+    """Convert normalised tensor to numpy image."""
+    img = img_t.clone()
+    img = img * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    img = img + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    img = img.clamp(0, 1).permute(1, 2, 0).numpy()
+    return img
+
+
+def stroked(ax, text, fontsize=14):
+    """White text with black edge stroke."""
+    ax.set_title(
+        text,
+        fontsize=fontsize,
+        color="white",
+        pad=6,
+        path_effects=[pe.withStroke(linewidth=3, foreground="black")]
+    )
+
+
+def show_classification_examples(model, loader, device, max_images=12):
+    """
+    Display classifier predictions in a 3-column table:
+
+      [IMAGE] | [GT LABEL] | [PRED LABEL]
+    """
+    model.eval()
+    rows = min(max_images, len(loader.dataset))
+    fig, axes = plt.subplots(rows, 3, figsize=(12, 4 * rows))
+
+    if rows == 1:
+        axes = np.expand_dims(axes, axis=0)
+
+    shown = 0
+
+    with torch.no_grad():
+        for imgs, labels in loader:
+            imgs, labels = imgs.to(device), labels.to(device)
+            logits = model(imgs)
+            preds = logits.argmax(1)
+
+            imgs_cpu = imgs.cpu()
+            labels_cpu = labels.cpu().numpy()
+            preds_cpu = preds.cpu().numpy()
+
+            for i in range(len(imgs)):
+                if shown >= rows:
+                    plt.tight_layout()
+                    plt.show()
+                    return
+
+                img_disp = undo_normalisation(imgs_cpu[i])
+                gt = CLASS_NAMES[labels_cpu[i]]
+                pr = CLASS_NAMES[preds_cpu[i]]
+
+                # --- Column 1: Image ---
+                ax_img = axes[shown, 0]
+                ax_img.imshow(img_disp)
+                stroked(ax_img, f"Image #{shown+1}")
+                ax_img.axis("off")
+
+                # --- Column 2: GT Label ---
+                ax_gt = axes[shown, 1]
+                ax_gt.text(0.5, 0.5, gt,
+                           ha="center", va="center",
+                           fontsize=18, color="white",
+                           path_effects=[pe.withStroke(linewidth=3, foreground="black")])
+                ax_gt.set_title("Ground Truth", fontsize=14)
+                ax_gt.axis("off")
+
+                # --- Column 3: Predicted Label ---
+                ax_pr = axes[shown, 2]
+                ax_pr.text(0.5, 0.5, pr,
+                           ha="center", va="center",
+                           fontsize=18, color="white",
+                           path_effects=[pe.withStroke(linewidth=3, foreground="black")])
+                ax_pr.set_title("Prediction", fontsize=14)
+                ax_pr.axis("off")
+
+                shown += 1
+
+    plt.tight_layout()
+    plt.show()
 # ============================================================
 # SEEDING
 # ============================================================
@@ -177,7 +264,8 @@ def main():
     train_classifier(model, train_loader, val_loader, device)
 
     print("TEST:", test_classifier(model, test_loader, device))
-
+    # Visualise predictions on test set
+    show_classification_examples(model, test_loader, device)
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,7 @@
 import os
 import re
 
-ROOT = r"C:\Users\rmcda\OneDrive\Documents\AIChemy\CV\comp-vis-vials.v3-no-vials.png-mask-semantic\train"
+ROOT = r"C:\Users\rmcda\OneDrive\Documents\AIChemy\CV\train"
 
 # Skip files you already renamed manually
 
