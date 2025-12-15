@@ -202,47 +202,107 @@ class FrontEndApp:
         mode = self.mode.get()
 
         # =====================================================
-        # SEGMENTATION MODE (dynamic class list)
+        # SEGMENTATION MODE (per-vial attachment)
         # =====================================================
         if mode == "segmentation":
             self.info_title.config(text="Segmentation Results")
 
+            # 1) Run segmentation (mask space: 256×256)
             pred = self.seg_engine.process_frame(frame)
 
-            # Overlay mask
-            coloured = mask_to_colour(pred)
-            coloured = cv2.resize(coloured, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST)
+            H, W = frame.shape[:2]
+            mask_h, mask_w = pred.shape
+
+            # 2) Visual overlay
+            pred_resized = cv2.resize(pred, (W, H), interpolation=cv2.INTER_NEAREST)
+            coloured = mask_to_colour(pred_resized)
             blended = cv2.addWeighted(frame, 1.0, coloured, 0.4, 0)
 
-            info = ""
-
-            # Count appearing classes
-            unique, counts = np.unique(pred, return_counts=True)
-            total = pred.size
-
-            for cid, count in zip(unique, counts):
-                if cid == 0:
-                    continue  # ignore background
-                name = CLASS_NAMES.get(cid, f"class {cid}")
-                pct = (count / total) * 100
-                info += f"- {name}: {pct:.2f}% coverage\n"
-
-            # VIAL ANALYSIS
+            # 3) Per-vial analysis (mask space)
             vials = analyse_vials(pred, VIAL_VOLUME_ML)
-            info += f"Detected vials: {len(vials)}\n\n"
+
+            info = f"Detected vials: {len(vials)}\n\n"
+
+            sx = W / float(mask_w)
+            sy = H / float(mask_h)
 
             for i, vial in enumerate(vials, 1):
+
+                xmin_m, ymin_m, xmax_m, ymax_m = vial["bbox"]
+
+                # Reproject bbox to frame space
+                x1 = int(xmin_m * sx)
+                y1 = int(ymin_m * sy)
+                x2 = int(xmax_m * sx)
+                y2 = int(ymax_m * sy)
+
+                cv2.rectangle(blended, (x1, y1), (x2, y2), (0, 255, 255), 2)
+
                 info += f"Vial {i}\n"
+
                 if not vial["layers"]:
                     info += "  Empty\n\n"
+                    label = "empty  0.0%  0.00 mL"
+
                 else:
+                    # -------------------------------------------------
+                    # Physically correct fill computation
+                    # -------------------------------------------------
+                    fill_layer = max(
+                        vial["layers"],
+                        key=lambda l: l["percentage"]
+                    )
+
+                    fill_pct = min(fill_layer["percentage"], 1.0)
+                    fill_vol = fill_pct * VIAL_VOLUME_ML
+
+                    dominant_name = CLASS_NAMES.get(
+                        fill_layer["class_id"],
+                        f"class {fill_layer['class_id']}"
+                    )
+
+                    # Info panel (keep detailed layers)
                     for layer in vial["layers"]:
                         cid = layer["class_id"]
                         name = CLASS_NAMES.get(cid, f"class {cid}")
                         pct = layer["percentage"] * 100
                         vol = layer["volume_ml"]
+
                         info += f"  - {name}: {pct:.1f}% ({vol:.2f} mL)\n"
+
                     info += "\n"
+
+                    # Label attached to the SIDE of the box
+                    label = f"{dominant_name}  {fill_pct*100:.1f}%  {fill_vol:.2f} mL"
+
+                # -------------------------------------------------
+                # Draw per-layer labels, aligned to layer position
+                # -------------------------------------------------
+                for layer in vial["layers"]:
+
+                    cid = layer["class_id"]
+                    name = CLASS_NAMES.get(cid, f"class {cid}")
+
+                    pct = layer["percentage"] * 100.0
+                    vol = layer["volume_ml"]
+
+                    # Vertical position of this layer (mask → frame)
+                    layer_y_m = int((layer["top"] + layer["bottom"]) / 2)
+                    layer_y = int(layer_y_m * sy)
+
+                    label = f"{name}  {pct:.1f}%  {vol:.2f} mL"
+
+                    cv2.putText(
+                        blended,
+                        label,
+                        (x2 + 6, layer_y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+
 
             self.last_info = info
             return blended
@@ -255,9 +315,22 @@ class FrontEndApp:
 
             label, conf = self.cls_engine.classify(frame)
 
+            # Choose colour based on class
+            if label.lower() == "none":
+                text_colour = (0, 0, 255)   # red (BGR)
+            else:
+                text_colour = (0, 255, 0)   # green
+
             # Draw on frame
-            cv2.putText(frame, f"{label} ({conf:.2f})", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(
+                frame,
+                f"{label} ({conf:.2f})",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                text_colour,
+                2,
+            )
 
             info = f"Top Prediction: {label} ({conf:.2f})\n\n"
 
@@ -274,6 +347,7 @@ class FrontEndApp:
 
             self.last_info = info
             return frame
+        
 
     # ============================================================
     # BACKGROUND WORKER LOOP

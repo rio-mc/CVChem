@@ -152,20 +152,28 @@ def analyse_vials(pred_mask, vial_volume_ml):
         inside_vial = (labelled == vial_id)
         layers = []
 
+        # For each liquid
         for class_id in [2, 3, 4]:
+            # Generate mask
             liquid_mask = (pred_mask == class_id) & inside_vial
+            # Find coordinates
             liquid_coords = np.column_stack(np.where(liquid_mask))
 
+            # If coordinates are 0, skip
             if liquid_coords.size == 0:
                 continue
-
+            
+            # Find y coordinates of liquid
             liquid_ys = liquid_coords[:, 0]
             top = liquid_ys.min()
             bottom = liquid_ys.max()
+            # Get height from top and bottom
             height = max(0, min(bottom - top + 1, vial_h))
 
+            # Percentage of liquid respective to the vial
             percentage = float(height) / float(vial_h)
             percentage = float(np.clip(percentage, 0.0, 1.0))
+            # Calculate volume of liquid with repsect to vial volume
             volume_ml = percentage * vial_volume_ml
 
             layers.append({
